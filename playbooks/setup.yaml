@@ -1,0 +1,166 @@
+---
+- name: Install Vault 1.13.1, Cert-Manager, and Kong on Localhost
+  hosts: localhost
+  gather_facts: no
+  become: yes
+  vars:
+    vault_version: "0.28.1"  # version 1.17.2
+    kong_version: "2.7.0"  # Updated version
+    cert_manager_version: "v1.15.3"
+    cert_manager_namespace: "cert-manager"
+    kube_context: "orbstack"
+    ansible_python_interpreter: /Users/lookman/.local/pipx/venvs/ansible/bin/python
+
+  tasks:
+    - name: Gather facts without sudo
+      ansible.builtin.setup:
+        gather_subset:
+          - all
+      become: false
+
+    - name: Ensure kubectl is installed (without sudo)
+      community.general.homebrew:
+        name: kubectl
+        state: present
+      become: false
+
+    - name: Ensure helm is installed (without sudo)
+      community.general.homebrew:
+        name: helm
+        state: present
+      become: false
+
+    - name: Ensure kubectx is installed (without sudo)
+      community.general.homebrew:
+        name: kubectx
+        state: present
+      become: false
+
+    - name: Use the specific Kubernetes context for OrbStack
+      ansible.builtin.shell: kubectx {{ kube_context }}
+      register: kube_context_switch
+      changed_when: "'Switched to context' in kube_context_switch.stdout"
+      become: false
+
+    - name: Create Kubernetes namespace for cert-manager
+      ansible.builtin.shell: |
+        kubectl create namespace {{ cert_manager_namespace }} || echo "Namespace {{ cert_manager_namespace }} already exists"
+      become: false
+
+    - name: Check if cert-manager is already installed
+      ansible.builtin.shell: helm list -n {{ cert_manager_namespace }} -q --filter ^cert-manager$
+      register: cert_manager_installed
+      ignore_errors: true
+      become: false
+
+    - name: Install Cert-Manager using Helm
+      ansible.builtin.shell: |
+        helm install cert-manager jetstack/cert-manager \
+        --namespace {{ cert_manager_namespace }} \
+        --version {{ cert_manager_version }} \
+        --set installCRDs=true
+      when: cert_manager_installed.stdout == ""
+      become: false
+
+    - name: Upgrade Cert-Manager using Helm
+      ansible.builtin.shell: |
+        helm upgrade cert-manager jetstack/cert-manager \
+        --namespace {{ cert_manager_namespace }} \
+        --version {{ cert_manager_version }} \
+        --set installCRDs=true
+      when: cert_manager_installed.stdout != ""
+      become: false
+
+    - name: Add Kong Helm repository
+      ansible.builtin.shell: helm repo add kong https://charts.konghq.com
+      register: kong_repo
+      changed_when: "'Successfully added chart repository kong' in kong_repo.stdout"
+      become: false
+
+    - name: Update Helm repositories
+      ansible.builtin.shell: helm repo update
+      become: false
+
+    - name: Check if Kong is already installed
+      ansible.builtin.shell: helm list -n kong -q --filter ^kong$
+      register: kong_installed
+      ignore_errors: true
+      become: false
+
+    - name: Install Kong using Helm with CRD installation skipped
+      ansible.builtin.shell: |
+        helm install kong kong/kong \
+        --namespace kong \
+        --create-namespace \
+        --version {{ kong_version }} \
+        --set ingressController.installCRDs=false \
+        --set admin.ingress.enabled=true \
+        --set proxy.ingress.enabled=true \
+        --set proxy.ingress.hostname=snapcart.local
+      register: kong_install
+      changed_when: "'kong installed' in kong_install.stdout"
+      when: kong_installed.stdout == ""
+      become: false
+
+    - name: Upgrade Kong using Helm with CRD installation skipped
+      ansible.builtin.shell: |
+        helm upgrade kong kong/kong \
+        --namespace kong \
+        --version {{ kong_version }} \
+        --set ingressController.installCRDs=false \
+        --set admin.ingress.enabled=true \
+        --set proxy.ingress.enabled=true \
+        --set proxy.ingress.hostname=snapcart.local
+      when: kong_installed.stdout != ""
+      become: false
+
+    - name: Add HashiCorp Helm repository
+      ansible.builtin.shell: helm repo add hashicorp https://helm.releases.hashicorp.com
+      register: hashicorp_repo
+      changed_when: "'Successfully added chart repository hashicorp' in hashicorp_repo.stdout"
+      become: false
+
+    - name: Update Helm repositories
+      ansible.builtin.shell: helm repo update
+      become: false
+
+    - name: Check if Vault is already installed
+      ansible.builtin.shell: helm list -n vault -q --filter ^vault$
+      register: vault_installed
+      ignore_errors: true
+      become: false
+
+    - name: Install Vault using Helm
+      ansible.builtin.shell: |
+        helm install vault hashicorp/vault \
+        --namespace vault \
+        --create-namespace \
+        --version {{ vault_version }} \
+        --set injector.enabled=false
+      when: vault_installed.stdout == ""
+      become: false
+
+    - name: Upgrade Vault using Helm
+      ansible.builtin.shell: |
+        helm upgrade vault hashicorp/vault \
+        --namespace vault \
+        --version {{ vault_version }} \
+        --set injector.enabled=false
+      when: vault_installed.stdout != ""
+      become: false
+
+    - name: Verify Kubernetes pods are running
+      ansible.builtin.shell: kubectl get pods -A
+      become: false
+
+    - name: Verify Cert-Manager is running
+      ansible.builtin.shell: kubectl get pods --namespace cert-manager
+      become: false
+
+    - name: Verify Kong is running
+      ansible.builtin.shell: kubectl get pods --namespace kong
+      become: false
+
+    - name: Verify Vault is running
+      ansible.builtin.shell: kubectl get pods --namespace vault
+      become: false
